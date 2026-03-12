@@ -147,6 +147,13 @@ void updateStatsOnUnblock(client *c, long blocked_us, long reply_us, int failed_
     /* Log the command into the commandlog if needed. */
     commandlogPushCurrentCommand(c, c->lastcmd);
     c->duration = 0;
+    c->qb_recv_time = 0;
+    c->parse_start_time = 0;
+    c->cmd_start_time = 0;
+    c->reply_start_time = 0;
+    c->subpath_qb_wait = 0;
+    c->subpath_blocked_wait = 0;
+    c->subpath_processing = 0;
     /* Log the reply duration event. */
     latencyAddSampleIfNeeded("command-unblocking", reply_us);
     latencyTraceIfNeeded(server, command_unblocking, reply_us);

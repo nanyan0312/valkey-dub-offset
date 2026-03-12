@@ -773,6 +773,13 @@ void moduleReleaseTempClient(client *c) {
     listEmpty(c->reply);
     c->reply_bytes = 0;
     c->duration = 0;
+    c->qb_recv_time = 0;
+    c->parse_start_time = 0;
+    c->cmd_start_time = 0;
+    c->reply_start_time = 0;
+    c->subpath_qb_wait = 0;
+    c->subpath_blocked_wait = 0;
+    c->subpath_processing = 0;
     resetClient(c);
     c->bufpos = 0;
     c->raw_flag = 0;
@@ -2489,6 +2496,29 @@ uint64_t VM_MonotonicMicroseconds(void) {
 /* Return the current UNIX time in microseconds */
 ustime_t VM_Microseconds(void) {
     return ustime();
+}
+
+/* Return the calling client's sub-path latency values (microseconds).
+ * These are computed by the core in processCommandAndResetClient() and call(),
+ * so they are available by the time any module command proc runs.
+ *
+ * On success, the output pointers are filled and VALKEYMODULE_OK is returned.
+ * If the context has no associated client, returns VALKEYMODULE_ERR and all
+ * output values are set to 0. */
+int VM_GetClientSubpathLatency(ValkeyModuleCtx *ctx,
+                               long long *input_buffer_wait_us,
+                               long long *blocked_wait_us,
+                               long long *processing_us) {
+    if (ctx->client == NULL) {
+        if (input_buffer_wait_us) *input_buffer_wait_us = 0;
+        if (blocked_wait_us) *blocked_wait_us = 0;
+        if (processing_us) *processing_us = 0;
+        return VALKEYMODULE_ERR;
+    }
+    if (input_buffer_wait_us) *input_buffer_wait_us = ctx->client->subpath_qb_wait;
+    if (blocked_wait_us) *blocked_wait_us = ctx->client->subpath_blocked_wait;
+    if (processing_us) *processing_us = ctx->client->subpath_processing;
+    return VALKEYMODULE_OK;
 }
 
 /* Return the cached UNIX time in microseconds.

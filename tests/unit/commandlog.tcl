@@ -98,13 +98,22 @@ start_server {tags {"commandlog"} overrides {commandlog-execution-slower-than 10
         # for slow
         r debug sleep 0.2
         set e [lindex [r commandlog get -1 slow] 0]
-        assert_equal [llength $e] 6
+        assert_equal [llength $e] 7
         if {!$::external} {
             assert_equal [lindex $e 0] 118
         }
         assert_equal [expr {[lindex $e 2] > 100000}] 1
         assert_equal [lindex $e 3] {debug sleep 0.2}
         assert_equal {foobar} [lindex $e 5]
+        # Verify sub-path latency breakdown is present (index 6)
+        set subpath [lindex $e 6]
+        assert_equal [llength $subpath] 8
+        assert_equal [lindex $subpath 0] {input-buffer-wait}
+        assert_equal [lindex $subpath 2] {blocked-wait}
+        assert_equal [lindex $subpath 4] {processing}
+        assert_equal [lindex $subpath 6] {output-buffer-wait}
+        # processing time should be > 100ms (100000 us)
+        assert {[lindex $subpath 5] > 100000}
 
         # for large-request
         set value [string repeat A 1024]

@@ -1372,6 +1372,14 @@ typedef struct client {
     slotMigrationJob *slot_migration_job; /* Pointer to the slot migration job, or NULL. */
     /* Output buffer and reply handling */
     long duration;                       /* Current command duration. Used for measuring latency of blocking/non-blocking cmds */
+    /* Sub-path latency tracking (all in microseconds) */
+    monotime qb_recv_time;               /* Timestamp when data was read into query buffer */
+    monotime parse_start_time;           /* Timestamp when parsing of the command started */
+    monotime cmd_start_time;             /* Timestamp when command processing started (after any blocking/postpone) */
+    monotime reply_start_time;           /* Timestamp when reply was first written to output buffer */
+    long long subpath_qb_wait;           /* Time spent in query buffer waiting to be parsed */
+    long long subpath_blocked_wait;      /* Time spent blocked/throttled before execution */
+    long long subpath_processing;        /* Time spent executing the command */
     char *buf;                           /* Output buffer */
     size_t buf_usable_size;              /* Usable size of buffer. */
     list *reply;                         /* List of reply objects to send to the client. */

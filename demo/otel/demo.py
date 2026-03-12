@@ -72,13 +72,18 @@ def valkey_exec(client, tracer, *args):
     The client sends traceparent as a RESP4 request header, so the server
     can correlate its execution to the client's trace and report:
       - Server-side execution duration (microseconds)
+      - Sub-path latency breakdown (input-buffer-wait, blocked-wait, processing, output-buffer-wait)
       - Internal events (keyspace notifications, hook activity)
 
     Each call produces one trace:
-      valkey SET (client)            ← measures network RTT
-        └── valkey.server SET        ← server-reported execution time
-              ├── hook: set key      ← keyspace notification
-              └── hook: NEW_KEY key  ← new key created
+      valkey SET (client)                  ← measures network RTT
+        └── valkey.server SET              ← server-reported total duration
+              ├── input-buffer-wait        ← time in query buffer
+              ├── blocked-wait             ← time blocked/throttled
+              ├── processing               ← actual command execution
+              ├── output-buffer-wait       ← time in output buffer
+              ├── hook: set key            ← keyspace notification
+              └── hook: NEW_KEY key        ← new key created
     """
     cmd = args[0].upper()
     stmt = " ".join(str(a) for a in args)
@@ -100,7 +105,18 @@ def valkey_exec(client, tracer, *args):
         dur = attrs.get("server-duration-us", 0)
         events = attrs.get("events", [])
 
+        # Sub-path latencies from server (microseconds)
+        input_buf_wait = attrs.get("input-buffer-wait-us", 0)
+        blocked_wait = attrs.get("blocked-wait-us", 0)
+        processing = attrs.get("processing-us", 0)
+        output_buf_wait = attrs.get("output-buffer-wait-us", 0)
+        server_start = attrs.get("server-start-us", 0)
+
         span.set_attribute("server.duration_us", dur if isinstance(dur, int) else 0)
+        span.set_attribute("server.input_buffer_wait_us", input_buf_wait if isinstance(input_buf_wait, int) else 0)
+        span.set_attribute("server.blocked_wait_us", blocked_wait if isinstance(blocked_wait, int) else 0)
+        span.set_attribute("server.processing_us", processing if isinstance(processing, int) else 0)
+        span.set_attribute("server.output_buffer_wait_us", output_buf_wait if isinstance(output_buf_wait, int) else 0)
         if isinstance(result, Exception):
             span.set_status(trace.StatusCode.ERROR, str(result))
         else:
@@ -108,16 +124,65 @@ def valkey_exec(client, tracer, *args):
         span.set_attribute("db.response", str(result)[:100])
         span.set_attribute("server.events_count", len(events) if isinstance(events, list) else 0)
 
-        # Server-side span with hook events as children
-        with tracer.start_as_current_span(
-            f"valkey.server {cmd}",
-            kind=trace.SpanKind.SERVER,
-            attributes={
-                "db.system": "valkey",
-                "db.operation": cmd,
-                "server.duration_us": dur if isinstance(dur, int) else 0,
-            },
-        ):
+        # Build server-side span and sub-path children using explicit
+        # start_time / end_time derived from the server's timestamps.
+        # This ensures the spans have real duration in the trace viewer
+        # and share the same trace-id as the parent client span.
+        #
+        # We use tracer.start_span() (not start_as_current_span) so we
+        # can set start_time, then manually end() with end_time.
+        # Parent linkage: server_span parents to the current client span
+        # via the implicit current context; sub-path spans parent to the
+        # server_span via an explicit context we construct.
+
+        server_start_ns = int(server_start) * 1000 if isinstance(server_start, int) and server_start > 0 else None
+        server_dur_ns = int(dur) * 1000 if isinstance(dur, int) else 0
+
+        if server_start_ns:
+            server_end_ns = server_start_ns + server_dur_ns
+
+            # Server span — parented to the current (client) span automatically
+            server_span = tracer.start_span(
+                f"valkey.server {cmd}",
+                kind=trace.SpanKind.SERVER,
+                start_time=server_start_ns,
+                attributes={
+                    "db.system": "valkey",
+                    "db.operation": cmd,
+                    "server.duration_us": dur if isinstance(dur, int) else 0,
+                },
+            )
+
+            # Build a context with the server span as current, so sub-path
+            # spans become its children (same trace-id, parent = server span).
+            server_ctx = trace.set_span_in_context(server_span)
+
+            # Sub-path latency spans tile sequentially within the server span
+            cursor_ns = server_start_ns
+            subpath_phases = [
+                ("input-buffer-wait", input_buf_wait),
+                ("blocked-wait", blocked_wait),
+                ("processing", processing),
+                ("output-buffer-wait", output_buf_wait),
+            ]
+            for phase_name, phase_us in subpath_phases:
+                phase_us = phase_us if isinstance(phase_us, int) else 0
+                phase_ns = phase_us * 1000
+                if phase_ns > 0:
+                    subpath_span = tracer.start_span(
+                        f"valkey.subpath {phase_name}",
+                        context=server_ctx,
+                        kind=trace.SpanKind.INTERNAL,
+                        start_time=cursor_ns,
+                        attributes={
+                            "subpath.phase": phase_name,
+                            "subpath.duration_us": phase_us,
+                        },
+                    )
+                    subpath_span.end(end_time=cursor_ns + phase_ns)
+                cursor_ns += phase_ns
+
+            # Hook events as children of the server span
             if isinstance(events, list):
                 for ev in events:
                     if not isinstance(ev, dict):
@@ -139,16 +204,31 @@ def valkey_exec(client, tracer, *args):
                     else:
                         name = f"hook: {etype} {detail}"
 
-                    with tracer.start_as_current_span(
+                    ev_span = tracer.start_span(
                         name,
+                        context=server_ctx,
                         kind=trace.SpanKind.INTERNAL,
                         attributes={
                             "event.type": etype,
                             "event.detail": detail,
                             "event.timestamp_ms": ts,
                         },
-                    ):
-                        pass
+                    )
+                    ev_span.end()
+
+            server_span.end(end_time=server_end_ns)
+
+        else:
+            # No server timestamps available — fall back to simple span
+            with tracer.start_as_current_span(
+                f"valkey.server {cmd}",
+                kind=trace.SpanKind.SERVER,
+                attributes={
+                    "db.system": "valkey",
+                    "db.operation": cmd,
+                },
+            ):
+                pass
 
         return result
 

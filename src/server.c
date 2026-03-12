@@ -3907,8 +3907,9 @@ void call(client *c, int flags) {
     else
         duration = ustime() - call_timer;
 
-    valkey_commands_trace(valkey_commands, command_call, connGetType(c->conn), getClientPeerId(c), getClientSockname(c), real_cmd->declared_name, duration);
+    valkey_commands_trace(valkey_commands, command_call, connGetType(c->conn), getClientPeerId(c), getClientSockname(c), real_cmd->declared_name, duration, c->subpath_qb_wait, c->subpath_blocked_wait, (long long)duration);
     c->duration += duration;
+    c->subpath_processing += duration;
     dirty = server.dirty - dirty;
     if (dirty < 0) dirty = 0;
 
@@ -3975,6 +3976,13 @@ void call(client *c, int flags) {
      * which is expected to record and reset the duration after unblocking. */
     if (!c->flag.blocked) {
         c->duration = 0;
+        c->qb_recv_time = 0;
+        c->parse_start_time = 0;
+        c->cmd_start_time = 0;
+        c->reply_start_time = 0;
+        c->subpath_qb_wait = 0;
+        c->subpath_blocked_wait = 0;
+        c->subpath_processing = 0;
     }
 
     /* Propagate the command into the AOF and replication link.
@@ -4066,6 +4074,13 @@ void call(client *c, int flags) {
 void rejectCommand(client *c, robj *reply) {
     flagTransaction(c);
     c->duration = 0;
+    c->qb_recv_time = 0;
+    c->parse_start_time = 0;
+    c->cmd_start_time = 0;
+    c->reply_start_time = 0;
+    c->subpath_qb_wait = 0;
+    c->subpath_blocked_wait = 0;
+    c->subpath_processing = 0;
     if (c->cmd) c->cmd->rejected_calls++;
     if (c->cmd && c->cmd->proc == execCommand) {
         execCommandAbort(c, objectGetVal(reply));
@@ -4078,6 +4093,13 @@ void rejectCommand(client *c, robj *reply) {
 void rejectCommandSds(client *c, sds s) {
     flagTransaction(c);
     c->duration = 0;
+    c->qb_recv_time = 0;
+    c->parse_start_time = 0;
+    c->cmd_start_time = 0;
+    c->reply_start_time = 0;
+    c->subpath_qb_wait = 0;
+    c->subpath_blocked_wait = 0;
+    c->subpath_processing = 0;
     if (c->cmd) c->cmd->rejected_calls++;
     if (c->cmd && c->cmd->proc == execCommand) {
         execCommandAbort(c, s);
@@ -4367,6 +4389,13 @@ int processCommand(client *c) {
             }
             clusterRedirectClient(c, n, c->slot, error_code);
             c->duration = 0;
+            c->qb_recv_time = 0;
+            c->parse_start_time = 0;
+            c->cmd_start_time = 0;
+            c->reply_start_time = 0;
+            c->subpath_qb_wait = 0;
+            c->subpath_blocked_wait = 0;
+            c->subpath_processing = 0;
             c->cmd->rejected_calls++;
             return C_OK;
         }
@@ -4402,6 +4431,13 @@ int processCommand(client *c) {
                 flagTransaction(c);
             }
             c->duration = 0;
+            c->qb_recv_time = 0;
+            c->parse_start_time = 0;
+            c->cmd_start_time = 0;
+            c->reply_start_time = 0;
+            c->subpath_qb_wait = 0;
+            c->subpath_blocked_wait = 0;
+            c->subpath_processing = 0;
             c->cmd->rejected_calls++;
             addReplyErrorSds(c, sdscatprintf(sdsempty(), "-REDIRECT %s:%d", server.primary_host, server.primary_port));
         }

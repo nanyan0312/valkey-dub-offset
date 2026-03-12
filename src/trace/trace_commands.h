@@ -56,7 +56,10 @@ LTTNG_UST_TRACEPOINT_EVENT(
 		const char *, addr,
 		const char *, laddr,
 		const char *, name,
-		uint64_t, duration
+		uint64_t, duration,
+		int64_t, input_buffer_wait,
+		int64_t, blocked_wait,
+		int64_t, processing
 	),
 
 	/* Output event fields */
@@ -66,6 +69,9 @@ LTTNG_UST_TRACEPOINT_EVENT(
 		lttng_ust_field_string(laddr, laddr)
 		lttng_ust_field_string(name, name)
 		lttng_ust_field_integer(uint64_t, duration, duration)
+		lttng_ust_field_integer(int64_t, input_buffer_wait, input_buffer_wait)
+		lttng_ust_field_integer(int64_t, blocked_wait, blocked_wait)
+		lttng_ust_field_integer(int64_t, processing, processing)
 	)
 )
 

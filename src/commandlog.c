@@ -84,6 +84,12 @@ static commandlogEntry *commandlogCreateEntry(client *c, robj **argv, int argc, 
     } else {
         ce->metadata = NULL;
     }
+
+    /* Copy sub-path latencies from client (meaningful for slow command log). */
+    ce->subpath_qb_wait = c->subpath_qb_wait;
+    ce->subpath_blocked_wait = c->subpath_blocked_wait;
+    ce->subpath_processing = c->subpath_processing;
+    ce->subpath_ob_wait = 0; /* Will be updated when output buffer is written to socket. */
     return ce;
 }
 
@@ -143,10 +149,20 @@ static void commandlogGetReply(client *c, int type, long count) {
     listRewind(server.commandlog[type].entries, &li);
     while (count--) {
         int j;
+        int has_subpath = (type == COMMANDLOG_TYPE_SLOW);
 
         ln = listNext(&li);
         ce = ln->value;
-        addReplyArrayLen(c, ce->metadata ? 7 : 6);
+
+        /* Compute the number of fields in the entry reply.
+         * Base fields: id, timestamp, value, argv, peerid, cname = 6
+         * +1 if metadata is present
+         * +1 if sub-path latencies are present (slow type only) */
+        int nfields = 6;
+        if (ce->metadata) nfields++;
+        if (has_subpath) nfields++;
+
+        addReplyArrayLen(c, nfields);
         addReplyLongLong(c, ce->id);
         addReplyLongLong(c, ce->time);
         addReplyLongLong(c, ce->value);
@@ -155,8 +171,8 @@ static void commandlogGetReply(client *c, int type, long count) {
         addReplyBulkCBuffer(c, ce->peerid, sdslen(ce->peerid));
         addReplyBulkCBuffer(c, ce->cname, sdslen(ce->cname));
         if (ce->metadata) {
-            unsigned long nfields = dictSize(ce->metadata);
-            addReplyArrayLen(c, nfields * 2);
+            unsigned long mfields = dictSize(ce->metadata);
+            addReplyArrayLen(c, mfields * 2);
             dictIterator *di = dictGetIterator(ce->metadata);
             dictEntry *de;
             while ((de = dictNext(di)) != NULL) {
@@ -166,6 +182,22 @@ static void commandlogGetReply(client *c, int type, long count) {
                 addReplyBulkCBuffer(c, val, sdslen(val));
             }
             dictReleaseIterator(di);
+        }
+        if (has_subpath) {
+            /* Sub-path latency breakdown as a map of 4 key-value pairs (all in microseconds):
+             * input-buffer-wait: time waiting in query buffer before parsing
+             * blocked-wait: time spent blocked/throttled before execution
+             * processing: time spent executing the command
+             * output-buffer-wait: time waiting in output buffer before write to socket */
+            addReplyArrayLen(c, 8);
+            addReplyBulkCString(c, "input-buffer-wait");
+            addReplyLongLong(c, ce->subpath_qb_wait);
+            addReplyBulkCString(c, "blocked-wait");
+            addReplyLongLong(c, ce->subpath_blocked_wait);
+            addReplyBulkCString(c, "processing");
+            addReplyLongLong(c, ce->subpath_processing);
+            addReplyBulkCString(c, "output-buffer-wait");
+            addReplyLongLong(c, ce->subpath_ob_wait);
         }
     }
 }
@@ -207,7 +239,7 @@ void slowlogCommand(client *c) {
             "    Return top <count> entries from the slowlog (default: 10, -1 mean all).",
             "    Entries are made of:",
             "    id, timestamp, time in microseconds, arguments array, client IP and port,",
-            "    client name",
+            "    client name, sub-path latencies (input-buffer-wait, blocked-wait, processing, output-buffer-wait)",
             "LEN",
             "    Return the length of the slowlog.",
             "RESET",
@@ -264,7 +296,8 @@ void commandlogCommand(client *c) {
             "        or size in bytes for type of large-request,",
             "        or size in bytes for type of large-reply",
             "    arguments array, client IP and port,",
-            "    client name",
+            "    client name,",
+            "    sub-path latencies (input-buffer-wait, blocked-wait, processing, output-buffer-wait) for slow type",
             "LEN <type>",
             "    Return the length of the specified type of commandlog.",
             "RESET <type>",

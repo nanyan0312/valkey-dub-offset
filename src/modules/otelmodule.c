@@ -546,25 +546,31 @@ int OtelEventsCommand(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int argc)
 /* OTEL.EXEC <command> [args...]
  *
  * Executes the given command on the server and returns the result, but also
- * attaches RESP4 reply-side attributes with server-side timing information.
+ * attaches RESP4 reply-side attributes with server-side timing information
+ * including sub-path latency breakdown.
  * This enables the client to create a "server" child span with actual
- * server-side execution duration.
+ * server-side execution duration and sub-path detail.
  *
  * Reply attributes returned (RESP4 clients only):
- *   server-start-us   : server timestamp (microseconds since epoch) when execution started
- *   server-end-us     : server timestamp (microseconds since epoch) when execution ended
- *   server-duration-us : execution duration in microseconds
- *   traceparent        : echoed back from request (if present)
+ *   server-start-us        : server timestamp (microseconds since epoch) when execution started
+ *   server-end-us          : server timestamp (microseconds since epoch) when execution ended
+ *   server-duration-us     : total execution duration in microseconds
+ *   input-buffer-wait-us   : time waiting in input buffer before parsing (0 for module calls)
+ *   blocked-wait-us        : time spent blocked/throttled before execution (0 for module calls)
+ *   processing-us          : time spent executing the inner command
+ *   output-buffer-wait-us  : time waiting in output buffer before socket write (0 at report time)
+ *   traceparent            : echoed back from request (if present)
  *
- * This gives the client enough information to create a server-side span:
+ * This gives the client enough information to create sub-path spans:
  *
  *   Client span:  |----------- network RTT + server time ----------|
  *   Server span:       |--- server-duration-us ---|
+ *     Sub-paths:       [input-buf][blocked][processing][output-buf]
  *
  * Example:
  *   > OTEL.EXEC SET foo bar
  *   # attribute: server-start-us=1698776172000123, server-end-us=1698776172000456,
- *   #            server-duration-us=333, traceparent=00-...
+ *   #            server-duration-us=333, processing-us=330, traceparent=00-...
  *   OK
  */
 int OtelExecCommand(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int argc) {
@@ -584,9 +590,11 @@ int OtelExecCommand(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int argc) {
     int events_before_pos = event_ring_pos;
     int events_before_count = event_ring_count;
 
-    /* Capture start timestamp */
-    mstime_t start_ms = ValkeyModule_Milliseconds();
-    long long start_us = (long long)start_ms * 1000;
+    /* Capture start timestamp using monotonic microseconds for sub-path tracking.
+     * The time from OTEL.EXEC entry to ValkeyModule_Call is the input-buffer-wait
+     * analog (command dispatch overhead). */
+    ustime_t otel_entry_us = ValkeyModule_Microseconds();
+    uint64_t mono_pre_call = ValkeyModule_MonotonicMicroseconds();
 
     /* Execute the command */
     ValkeyModuleCallReply *reply;
@@ -597,9 +605,21 @@ int OtelExecCommand(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int argc) {
     }
 
     /* Capture end timestamp */
-    mstime_t end_ms = ValkeyModule_Milliseconds();
-    long long end_us = (long long)end_ms * 1000;
-    long long duration_us = end_us - start_us;
+    uint64_t mono_post_call = ValkeyModule_MonotonicMicroseconds();
+    ustime_t otel_end_us = ValkeyModule_Microseconds();
+
+    long long processing_us = (long long)(mono_post_call - mono_pre_call);
+    long long total_duration_us = (long long)(otel_end_us - otel_entry_us);
+
+    /* Sub-path latency breakdown for OTEL.EXEC:
+     * - input-buffer-wait: not directly measurable here (the outer OTEL.EXEC
+     *   command's own qb/parse wait is tracked by the core). We report 0.
+     * - blocked-wait: not applicable for module-dispatched calls. We report 0.
+     * - processing: time inside ValkeyModule_Call (the actual command execution).
+     * - output-buffer-wait: not yet written to socket. We report 0. */
+    long long input_buffer_wait_us = 0;
+    long long blocked_wait_us = 0;
+    long long output_buffer_wait_us = 0;
 
     /* Count events that fired DURING this command */
     int new_events = event_ring_count - events_before_count;
@@ -610,17 +630,30 @@ int OtelExecCommand(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int argc) {
     if (new_events < 0) new_events = 0;
     if (new_events > MAX_EVENTS) new_events = MAX_EVENTS;
 
-    /* Send reply attributes: timing + events that fired during this command */
-    ValkeyModule_ReplyWithAttribute(ctx, 5);
+    /* Send reply attributes: timing + sub-path latencies + events */
+    ValkeyModule_ReplyWithAttribute(ctx, 9);
 
     ValkeyModule_ReplyWithCString(ctx, "server-start-us");
-    ValkeyModule_ReplyWithLongLong(ctx, start_us);
+    ValkeyModule_ReplyWithLongLong(ctx, (long long)otel_entry_us);
 
     ValkeyModule_ReplyWithCString(ctx, "server-end-us");
-    ValkeyModule_ReplyWithLongLong(ctx, end_us);
+    ValkeyModule_ReplyWithLongLong(ctx, (long long)otel_end_us);
 
     ValkeyModule_ReplyWithCString(ctx, "server-duration-us");
-    ValkeyModule_ReplyWithLongLong(ctx, duration_us);
+    ValkeyModule_ReplyWithLongLong(ctx, total_duration_us);
+
+    /* Sub-path latency breakdown */
+    ValkeyModule_ReplyWithCString(ctx, "input-buffer-wait-us");
+    ValkeyModule_ReplyWithLongLong(ctx, input_buffer_wait_us);
+
+    ValkeyModule_ReplyWithCString(ctx, "blocked-wait-us");
+    ValkeyModule_ReplyWithLongLong(ctx, blocked_wait_us);
+
+    ValkeyModule_ReplyWithCString(ctx, "processing-us");
+    ValkeyModule_ReplyWithLongLong(ctx, processing_us);
+
+    ValkeyModule_ReplyWithCString(ctx, "output-buffer-wait-us");
+    ValkeyModule_ReplyWithLongLong(ctx, output_buffer_wait_us);
 
     /* Echo back traceparent if present */
     ValkeyModuleString *traceparent =

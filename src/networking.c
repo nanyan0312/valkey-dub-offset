@@ -369,6 +369,13 @@ client *createClient(connection *conn) {
     c->slot = -1;
     c->ctime = c->last_interaction = server.unixtime;
     c->duration = 0;
+    c->qb_recv_time = 0;
+    c->parse_start_time = 0;
+    c->cmd_start_time = 0;
+    c->reply_start_time = 0;
+    c->subpath_qb_wait = 0;
+    c->subpath_blocked_wait = 0;
+    c->subpath_processing = 0;
     clientSetDefaultAuth(c);
     c->slot_migration_job = NULL;
     c->reply = listCreate();
@@ -501,6 +508,13 @@ int prepareClientToWrite(client *c) {
     if (!clientHasPendingReplies(c)) putClientInPendingWriteQueue(c);
 
     if (!isDeferredReplyEnabled(c)) c->flag.buffered_reply = 1;
+
+    /* Record the time the first reply is written to the output buffer
+     * for sub-path latency tracking. Only set once per command. */
+    if (c->reply_start_time == 0) {
+        c->reply_start_time = getMonotonicUs();
+    }
+
     /* Authorize the caller to queue in the output buffer of this client. */
     return C_OK;
 }
@@ -3857,6 +3871,27 @@ int processCommandAndResetClient(client *c) {
     int deadclient = 0;
     client *old_client = server.current_client;
     server.current_client = c;
+
+    /* Compute sub-path latencies up to this point.
+     * qb_wait: time from data arrival in query buffer until parse started.
+     * The time from parse_start to now is any pre-execution overhead (blocking, throttling). */
+    monotime now = getMonotonicUs();
+    if (c->qb_recv_time > 0 && c->parse_start_time > 0) {
+        c->subpath_qb_wait = c->parse_start_time - c->qb_recv_time;
+        if (c->subpath_qb_wait < 0) c->subpath_qb_wait = 0;
+    } else {
+        c->subpath_qb_wait = 0;
+    }
+    /* blocked_wait is the time from parse completion to now (command execution start).
+     * This captures time spent in pre-command checks, pausing, postponing, etc. */
+    if (c->parse_start_time > 0) {
+        c->subpath_blocked_wait = now - c->parse_start_time;
+        if (c->subpath_blocked_wait < 0) c->subpath_blocked_wait = 0;
+    } else {
+        c->subpath_blocked_wait = 0;
+    }
+    c->cmd_start_time = now;
+
     if (processCommand(c) == C_OK) {
         commandProcessed(c);
         /* Update the client's memory to include output buffer growth following the
@@ -4270,6 +4305,8 @@ int processInputBuffer(client *c) {
 
         /* If commands are queued up, pop from the queue first */
         if (!consumeCommandQueue(c)) {
+            /* Record parse start time for sub-path latency tracking. */
+            c->parse_start_time = getMonotonicUs();
             parseInputBuffer(c);
             prepareCommandQueue(c);
         }
@@ -4372,6 +4409,12 @@ static bool readToQueryBuf(client *c) {
     c->nread = connRead(c->conn, c->querybuf + qblen, readlen);
     if (c->nread <= 0) {
         return false;
+    }
+
+    /* Record the time data arrived in the query buffer for sub-path latency tracking.
+     * Only set if not already set (first read for this command). */
+    if (c->qb_recv_time == 0) {
+        c->qb_recv_time = getMonotonicUs();
     }
 
     sdsIncrLen(c->querybuf, c->nread);
@@ -6723,6 +6766,8 @@ void ioThreadReadQueryFromClient(void *data) {
         goto done;
     }
 
+    /* Record parse start time for sub-path latency tracking. */
+    c->parse_start_time = getMonotonicUs();
     parseInputBuffer(c);
     trimCommandQueue(c);
     prepareCommandQueue(c);

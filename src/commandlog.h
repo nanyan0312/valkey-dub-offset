@@ -45,6 +45,11 @@ typedef struct commandlogEntry {
     sds cname;       /* Client name. */
     sds peerid;      /* Client network address. */
     dict *metadata;  /* Optional module-set metadata (sds key -> sds value). NULL if none. */
+    /* Sub-path latencies in microseconds (only meaningful for COMMANDLOG_TYPE_SLOW) */
+    long long subpath_qb_wait;      /* Time waiting in query buffer before parsing */
+    long long subpath_blocked_wait; /* Time spent blocked/throttled */
+    long long subpath_processing;   /* Time spent executing the command */
+    long long subpath_ob_wait;      /* Time waiting in output buffer before write to socket */
 } commandlogEntry;
 
 /* Exported API */
