@@ -612,14 +612,18 @@ int OtelExecCommand(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int argc) {
     long long total_duration_us = (long long)(otel_end_us - otel_entry_us);
 
     /* Sub-path latency breakdown for OTEL.EXEC:
-     * - input-buffer-wait: not directly measurable here (the outer OTEL.EXEC
-     *   command's own qb/parse wait is tracked by the core). We report 0.
-     * - blocked-wait: not applicable for module-dispatched calls. We report 0.
+     * - input-buffer-wait: retrieved from the calling client's sub-path tracking
+     *   (computed by the core in processCommandAndResetClient before we get here).
+     * - blocked-wait: retrieved from the calling client's sub-path tracking.
      * - processing: time inside ValkeyModule_Call (the actual command execution).
      * - output-buffer-wait: not yet written to socket. We report 0. */
     long long input_buffer_wait_us = 0;
     long long blocked_wait_us = 0;
+    long long client_processing_us = 0;
     long long output_buffer_wait_us = 0;
+    ValkeyModule_GetClientSubpathLatency(ctx, &input_buffer_wait_us,
+                                         &blocked_wait_us,
+                                         &client_processing_us);
 
     /* Count events that fired DURING this command */
     int new_events = event_ring_count - events_before_count;

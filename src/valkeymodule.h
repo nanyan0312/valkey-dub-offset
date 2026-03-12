@@ -1777,6 +1777,10 @@ VALKEYMODULE_API mstime_t (*ValkeyModule_Milliseconds)(void) VALKEYMODULE_ATTR;
 VALKEYMODULE_API uint64_t (*ValkeyModule_MonotonicMicroseconds)(void) VALKEYMODULE_ATTR;
 VALKEYMODULE_API ustime_t (*ValkeyModule_Microseconds)(void) VALKEYMODULE_ATTR;
 VALKEYMODULE_API ustime_t (*ValkeyModule_CachedMicroseconds)(void) VALKEYMODULE_ATTR;
+VALKEYMODULE_API int (*ValkeyModule_GetClientSubpathLatency)(ValkeyModuleCtx *ctx,
+                                                             long long *input_buffer_wait_us,
+                                                             long long *blocked_wait_us,
+                                                             long long *processing_us) VALKEYMODULE_ATTR;
 VALKEYMODULE_API void (*ValkeyModule_DigestAddStringBuffer)(ValkeyModuleDigest *md,
                                                             const char *ele,
                                                             size_t len) VALKEYMODULE_ATTR;
@@ -2419,6 +2423,7 @@ static int ValkeyModule_Init(ValkeyModuleCtx *ctx, const char *name, int ver, in
     VALKEYMODULE_GET_API(MonotonicMicroseconds);
     VALKEYMODULE_GET_API(Microseconds);
     VALKEYMODULE_GET_API(CachedMicroseconds);
+    VALKEYMODULE_GET_API(GetClientSubpathLatency);
     VALKEYMODULE_GET_API(DigestAddStringBuffer);
     VALKEYMODULE_GET_API(DigestAddLongLong);
     VALKEYMODULE_GET_API(DigestEndSequence);

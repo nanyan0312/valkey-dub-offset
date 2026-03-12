@@ -2498,6 +2498,7 @@ ustime_t VM_Microseconds(void) {
     return ustime();
 }
 
+
 /* Return the calling client's sub-path latency values (microseconds).
  * These are computed by the core in processCommandAndResetClient() and call(),
  * so they are available by the time any module command proc runs.
@@ -14899,6 +14900,7 @@ void moduleRegisterCoreAPI(void) {
     REGISTER_API(MonotonicMicroseconds);
     REGISTER_API(Microseconds);
     REGISTER_API(CachedMicroseconds);
+    REGISTER_API(GetClientSubpathLatency);
     REGISTER_API(BlockedClientMeasureTimeStart);
     REGISTER_API(BlockedClientMeasureTimeEnd);
     REGISTER_API(GetThreadSafeContext);
